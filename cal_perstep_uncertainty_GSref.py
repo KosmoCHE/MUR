@@ -90,13 +90,60 @@ def select_best_candidate(critic_model, tokenizer, question, traj, candidates, a
 
     return int(np.argmax(yes_logps)), yes_logps
 
+def calculate_reference_uncertainty(question, policy_model, policy_tokenizer, policy_stop_token, args):
+    current_traj, candidate_traj = [], []
+    step_uncertainty = []
+    step_momentum_uncertainty = []
+    momentum_uncertainty, get_answer = 0, False
+    for step_idx in range(args.max_steps):
+        try:
+            input_text = build_policy_input(
+                policy_tokenizer, question, current_traj, step_idx, policy_stop_token)
+            sampling_params = SamplingParams(
+                max_tokens=2048, temperature=0.6, stop=["Step"], logprobs=1)
+            outputs = policy_model.generate(input_text, sampling_params)
 
+            output = outputs[0].outputs[0]
+
+            logp = output.cumulative_logprob
+            avg_logp = logp / (len(output.token_ids) + 1e-8)
+            cur_signal = avg_logp
+            current_traj.append(f"Step{step_idx}: {output.text.strip()}")
+            step_uncertainty.append(cur_signal)
+            if "the answer is" in ''.join(current_traj).lower():
+                get_answer = True
+                break
+
+        except Exception as e:
+            print(f"Step error: {e}")
+            continue
+
+    # Try to finish with one last step if no answer found
+    if not get_answer:
+        try:
+            input_text = build_policy_input(
+                policy_tokenizer, question, current_traj, step_idx, policy_stop_token)
+            sampling_params = SamplingParams(
+                max_tokens=8096, temperature=0.6, logprobs=1)
+            outputs = policy_model.generate(input_text, sampling_params)
+            current_traj.append(outputs[0].outputs[0].text.strip())
+            all_policy_output_tokens += len(
+                outputs[0].outputs[0].token_ids)
+        except Exception as e:
+            print(f"Final fallback error: {e}")
+
+    return {
+        "step_uncertainty": step_uncertainty,
+        "mean": np.mean(step_uncertainty),
+    }
 def main(args):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.aim_gpu)
 
     # Load models and tokenizers
     policy_model, policy_tokenizer, policy_stop_token = load_model_and_tokenizer(
         args.policy, gpu_memory_utilization=0.4)
+    critic_model, critic_tokenizer, critic_stop_token = load_model_and_tokenizer(
+        args.critic, gpu_memory_utilization=0.9)
     system_prompt = get_system_prompt(args.data_path)
 
     with open(args.data_path, 'r', encoding='utf-8') as f:
@@ -110,10 +157,11 @@ def main(args):
         print(f"Processing {idx} / {len(test_data)}")
         question = example['input']
         current_traj, candidate_traj = [], []
+        momentum_uncertainty, get_answer = 0, False
         step_uncertainty = []
         step_momentum_uncertainty = []
-        momentum_uncertainty, get_answer = 0, False
-
+        ref_mean_uncertainty = calculate_reference_uncertainty(
+            question, policy_model, policy_tokenizer, policy_stop_token, args)["mean"]
         for step_idx in range(args.max_steps):
             try:
                 input_text = build_policy_input(
@@ -129,7 +177,37 @@ def main(args):
                 avg_logp = logp / (len(output.token_ids) + 1e-8)
                 cur_signal = avg_logp
                 current_traj.append(f"Step{step_idx}: {output.text.strip()}")
+
+                # Trigger candidate search if low confidence
+                if np.exp(cur_signal) < np.exp(ref_mean_uncertainty) * args.scaling_rate and step_idx > 0:
+                    input_text = build_policy_input(
+                        policy_tokenizer, question, current_traj[:-1], step_idx, policy_stop_token)
+                    sampling_params = SamplingParams(max_tokens=2048, temperature=0.6, stop=[
+                                                     "Step"], logprobs=1, n=args.candidate_num)
+                    outputs = policy_model.generate(
+                        input_text, sampling_params)
+
+                    candidates = [o.text.strip() for o in outputs[0].outputs]
+                    logps = [o.cumulative_logprob /
+                             (len(o.token_ids) + 1e-8) for o in outputs[0].outputs]
+                    all_policy_output_tokens += sum(len(o.token_ids)
+                                                    for o in outputs[0].outputs)
+
+                    best_idx, yes_scores = select_best_candidate(
+                        critic_model, critic_tokenizer, question, current_traj[:-1], candidates, args, critic_stop_token, step_idx)
+                    current_traj[-1] = candidates[best_idx]
+                    cur_signal = logps[best_idx]
+
+                    candidate_traj.append({
+                        'step_idx': str(step_idx),
+                        'step_uncertainty': str(np.exp(-cur_signal)),
+                        'momentum_uncertainty/gamma': str(np.exp(-momentum_uncertainty) / args.momentum_rate),
+                        'selected_idx': str(best_idx),
+                        'candidates': candidates,
+                        'original_traj': current_traj[-1]
+                    })
                 step_uncertainty.append(cur_signal)
+                
                 momentum_uncertainty = args.momentum_rate * \
                     momentum_uncertainty + \
                     (1 - args.momentum_rate) * cur_signal
@@ -192,6 +270,8 @@ if __name__ == "__main__":
     parser.add_argument('--scaling_rate', type=float, default=0.8)
     parser.add_argument('--aim_gpu', type=int, default=0)
     parser.add_argument('--policy', type=str, default='Qwen3-1.7B')
+    # critic is the external model(in this file, it is used for selecting the best candidate)
+    parser.add_argument('--critic', type=str, default='genprm1.5B')
     args = parser.parse_args()
 
     main(args)

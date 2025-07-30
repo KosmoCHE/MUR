@@ -13,11 +13,12 @@ args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.aim_gpu)
 
 # Replace with your model path
-model_path = 'general_verifier'
+model_path = '/apdcephfs_qy3/share_1443437/xinyuche/model/general-verifier'
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(model_path)
-model = LLM(model=model_path, tensor_parallel_size=1,trust_remote_code=True, gpu_memory_utilization=0.9)
+print("Tokenizer loaded successfully.")
+model = LLM(model=model_path, tensor_parallel_size=1, gpu_memory_utilization=0.9)
 
 test_path = args.test_file
 test_data = []
