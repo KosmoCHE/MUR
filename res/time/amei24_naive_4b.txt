@@ -1,0 +1,6 @@
+
+
+amei24_naive_4b  time: 884.3974437713623
+
+all_policy_output_tokens: 79070
+all_critic_output_tokens: 0

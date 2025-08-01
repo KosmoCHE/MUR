@@ -1,0 +1,5 @@
+
+
+test_data_path: ./res/amei24_gsref_4b.json
+accuracy: 0.3
+test_res: [1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
