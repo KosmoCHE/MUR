@@ -93,43 +93,43 @@ def select_best_candidate(critic_model, tokenizer, question, traj, candidates, a
     return int(np.argmax(yes_logps)), yes_logps
 
 
-def pre_generate_trajectory(policy_model, policy_tokenizer, policy_stop_token, question, max_steps):
-    """Generate a full trajectory without TTS to calibrate uncertainty threshold."""
+def generate_calibration_trajectory(policy_model, tokenizer, question, max_steps, stop_token):
+    """Pre-calibration: generate one trajectory without TTS to estimate per-step uncertainty."""
     traj = []
-    step_uncertainties = []
+    step_logps = []
 
     for step_idx in range(max_steps):
         try:
             input_text = build_policy_input(
-                policy_tokenizer, question, traj, step_idx, policy_stop_token)
+                tokenizer, question, traj, step_idx, stop_token)
             sampling_params = SamplingParams(
                 max_tokens=2048, temperature=0.6, stop=["Step"], logprobs=1)
             outputs = policy_model.generate(input_text, sampling_params)
 
             output = outputs[0].outputs[0]
             avg_logp = output.cumulative_logprob / (len(output.token_ids) + 1e-8)
-            uncertainty = -avg_logp
-
+            step_logps.append(avg_logp)
             traj.append(f"Step{step_idx}: {output.text.strip()}")
-            step_uncertainties.append(uncertainty)
 
             if "the answer is" in ''.join(traj).lower():
                 break
         except Exception as e:
-            print(f"Pre-generation error at step {step_idx}: {e}")
+            print(f"  Calibration error at step {step_idx}: {e}")
             continue
 
-    avg_uncertainty = np.mean(step_uncertainties) if step_uncertainties else 0.0
-    return avg_uncertainty, step_uncertainties
+    mean_logp = float(np.mean(step_logps)) if step_logps else 0.0
+    return mean_logp, step_logps
 
 
 def main(args):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.aim_gpu)
 
+    # Load models and tokenizers
     policy_model, policy_tokenizer, policy_stop_token = load_model_and_tokenizer(
         args.policy, gpu_memory_utilization=0.4)
     critic_model, critic_tokenizer, critic_stop_token = load_model_and_tokenizer(
         args.critic, gpu_memory_utilization=0.9)
+    system_prompt = get_system_prompt(args.data_path)
 
     with open(args.data_path, 'r', encoding='utf-8') as f:
         test_data = json.load(f)
@@ -142,12 +142,12 @@ def main(args):
         print(f"Processing {idx} / {len(test_data)}")
         question = example['input']
 
-        # Phase 1: pre-generate a trajectory to get average uncertainty
-        avg_uncertainty, pre_uncertainties = pre_generate_trajectory(
-            policy_model, policy_tokenizer, policy_stop_token, question, args.max_steps)
-        print(f"  Pre-generation avg uncertainty: {avg_uncertainty:.4f}")
+        # Phase 1: Pre-calibration — generate a trajectory without TTS to get mean uncertainty
+        calibration_mean_logp, calibration_step_logps = generate_calibration_trajectory(
+            policy_model, policy_tokenizer, question, args.max_steps, policy_stop_token)
+        print(f"  Calibration mean logp: {calibration_mean_logp:.4f}, steps: {len(calibration_step_logps)}")
 
-        # Phase 2: formal solving with TTS triggered by uncertainty > avg
+        # Phase 2: Formal solving with TTS triggered by calibration baseline
         current_traj, candidate_traj = [], []
         step_uncertainties = []
         get_answer = False
@@ -163,23 +163,26 @@ def main(args):
                 output = outputs[0].outputs[0]
                 all_policy_output_tokens += len(output.token_ids)
 
-                avg_logp = output.cumulative_logprob / (len(output.token_ids) + 1e-8)
-                uncertainty = -avg_logp
+                logp = output.cumulative_logprob
+                avg_logp = logp / (len(output.token_ids) + 1e-8)
+                cur_signal = avg_logp
                 current_traj.append(f"Step{step_idx}: {output.text.strip()}")
+
+                # Trigger condition: step uncertainty > calibration mean (controlled by scaling_rate)
+                # avg_logp is negative; lower value = higher uncertainty.
+                # Trigger when cur_signal < calibration_mean * scaling_rate
+                triggered = cur_signal < calibration_mean_logp * args.scaling_rate and step_idx > 0
+
                 step_uncertainties.append({
                     'step_idx': step_idx,
-                    'uncertainty': float(uncertainty),
-                    'triggered': False
+                    'avg_logp': float(cur_signal),
+                    'calibration_mean_logp': float(calibration_mean_logp),
+                    'threshold': float(calibration_mean_logp * args.scaling_rate),
+                    'triggered': triggered
                 })
 
-                if "the answer is" in ''.join(current_traj).lower():
-                    get_answer = True
-                    break
-
-                # Trigger TTS when step uncertainty exceeds pre-calibrated average
-                if uncertainty > avg_uncertainty and step_idx > 0:
-                    print(f"  Triggering TTS at step {step_idx}: uncertainty {uncertainty:.4f} > avg {avg_uncertainty:.4f}")
-                    step_uncertainties[-1]['triggered'] = True
+                if triggered:
+                    print(f"  Triggered at step {step_idx}: logp={cur_signal:.4f} < threshold={calibration_mean_logp * args.scaling_rate:.4f}")
 
                     input_text = build_policy_input(
                         policy_tokenizer, question, current_traj[:-1], step_idx, policy_stop_token)
@@ -197,17 +200,20 @@ def main(args):
                     best_idx, yes_scores = select_best_candidate(
                         critic_model, critic_tokenizer, question, current_traj[:-1], candidates, args, critic_stop_token, step_idx)
                     current_traj[-1] = candidates[best_idx]
-                    updated_uncertainty = -logps[best_idx]
-                    step_uncertainties[-1]['uncertainty_after_tts'] = float(updated_uncertainty)
+                    cur_signal = logps[best_idx]
 
                     candidate_traj.append({
                         'step_idx': str(step_idx),
-                        'uncertainty': str(uncertainty),
-                        'avg_uncertainty_threshold': str(avg_uncertainty),
+                        'step_uncertainty': str(np.exp(-cur_signal)),
+                        'calibration_mean_uncertainty': str(np.exp(-calibration_mean_logp)),
                         'selected_idx': str(best_idx),
                         'candidates': candidates,
                         'original_traj': current_traj[-1]
                     })
+
+                if "the answer is" in ''.join(current_traj).lower():
+                    get_answer = True
+                    break
 
             except Exception as e:
                 print(f"Step error: {e}")
@@ -233,8 +239,8 @@ def main(args):
             'current_traj': '\n'.join(current_traj),
             'final_answer': current_traj[-1] if current_traj else 'No answer',
             'candidate_traj': candidate_traj,
-            'pre_avg_uncertainty': float(avg_uncertainty),
-            'pre_step_uncertainties': [float(u) for u in pre_uncertainties],
+            'calibration_mean_logp': float(calibration_mean_logp),
+            'calibration_step_logps': [float(v) for v in calibration_step_logps],
             'step_uncertainties': step_uncertainties
         })
 
@@ -260,6 +266,7 @@ if __name__ == "__main__":
                         default='guided_search-pre_calibration.json')
     parser.add_argument('--candidate_num', type=int, default=4)
     parser.add_argument('--verify_num', type=int, default=1)
+    parser.add_argument('--scaling_rate', type=float, default=0.8)
     parser.add_argument('--aim_gpu', type=int, default=0)
     parser.add_argument('--policy', type=str, default='Qwen3-1.7B')
     parser.add_argument('--critic', type=str, default='genprm1.5B')

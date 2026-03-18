@@ -114,6 +114,7 @@ def main(args):
         print(f"Processing {idx} / {len(test_data)}")
         question = example['input']
         current_traj, candidate_traj = [], []
+        step_uncertainties = []
         momentum_uncertainty, get_answer = 0, False
 
         for step_idx in range(args.max_steps):
@@ -132,8 +133,16 @@ def main(args):
                 cur_signal = avg_logp
                 current_traj.append(f"Step{step_idx}: {output.text.strip()}")
 
+                triggered = np.exp(cur_signal) < np.exp(momentum_uncertainty) * args.scaling_rate and step_idx > 0
+                step_uncertainties.append({
+                    'step_idx': step_idx,
+                    'avg_logp': float(cur_signal),
+                    'momentum_uncertainty': float(momentum_uncertainty),
+                    'triggered': triggered
+                })
+
                 # We should notice that the implementation of momentum_uncertainty and cur_signal is different from those in paper, but is equivalent in math.
-                if np.exp(cur_signal) < np.exp(momentum_uncertainty) * args.scaling_rate and step_idx > 0:
+                if triggered:
                     input_text = build_policy_input(
                         policy_tokenizer, question, current_traj[:-1], step_idx, policy_stop_token)
                     sampling_params = SamplingParams(max_tokens=2048, temperature=0.6, stop=[
@@ -192,7 +201,8 @@ def main(args):
             'ground_truth': example['target'],
             'current_traj': '\n'.join(current_traj),
             'final_answer': current_traj[-1] if current_traj else 'No answer',
-            'candidate_traj': candidate_traj
+            'candidate_traj': candidate_traj,
+            'step_uncertainties': step_uncertainties
         })
 
         with open(f'res/{args.file_name}.json', 'w') as f:
