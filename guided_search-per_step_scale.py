@@ -20,7 +20,7 @@ def load_model_and_tokenizer(model_dir, gpu_memory_utilization=0.6):
 
 
 def get_system_prompt(data_path):
-     if 'math' in data_path.lower() :
+    if 'math' in data_path.lower() :
         return ''
     elif 'aime' in data_path.lower():
         return 'You are a helpful math assistant. '
@@ -100,7 +100,7 @@ def main(args):
     policy_model, policy_tokenizer, policy_stop_token = load_model_and_tokenizer(
         args.policy, gpu_memory_utilization=0.4)
     critic_model, critic_tokenizer, critic_stop_token = load_model_and_tokenizer(
-        args.critic, gpu_memory_utilization=0.9)
+        args.critic, gpu_memory_utilization=0.4)
     system_prompt = get_system_prompt(args.data_path)
 
     with open(args.data_path, 'r', encoding='utf-8') as f:
@@ -137,7 +137,8 @@ def main(args):
                     'step_idx': step_idx,
                     'avg_logp': float(cur_signal),
                     'momentum_uncertainty': float(momentum_uncertainty),
-                    'triggered': True
+                    'triggered': True,
+                    'step_text': f"Step{step_idx}: {output.text.strip()}"
                 })
 
                 # Trigger candidate search at every step (per-step baseline)
@@ -210,6 +211,7 @@ def main(args):
     end_time = time.time()
     print(f"Total time taken: {end_time - start_time} seconds")
 
+    os.makedirs('res/time', exist_ok=True)
     with open(f'res/time/{args.file_name}.txt', 'w') as f:
         f.write(f'\n\n{args.file_name}  time: {end_time - start_time}\n\n')
         f.write(f'all_policy_output_tokens: {all_policy_output_tokens}\n')

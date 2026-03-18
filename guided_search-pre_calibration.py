@@ -128,7 +128,7 @@ def main(args):
     policy_model, policy_tokenizer, policy_stop_token = load_model_and_tokenizer(
         args.policy, gpu_memory_utilization=0.4)
     critic_model, critic_tokenizer, critic_stop_token = load_model_and_tokenizer(
-        args.critic, gpu_memory_utilization=0.9)
+        args.critic, gpu_memory_utilization=0.4)
     system_prompt = get_system_prompt(args.data_path)
 
     with open(args.data_path, 'r', encoding='utf-8') as f:
@@ -178,7 +178,8 @@ def main(args):
                     'avg_logp': float(cur_signal),
                     'calibration_mean_logp': float(calibration_mean_logp),
                     'threshold': float(calibration_mean_logp * args.scaling_rate),
-                    'triggered': triggered
+                    'triggered': triggered,
+                    'step_text': f"Step{step_idx}: {output.text.strip()}"
                 })
 
                 if triggered:
@@ -250,6 +251,7 @@ def main(args):
     end_time = time.time()
     print(f"Total time taken: {end_time - start_time} seconds")
 
+    os.makedirs('res/time', exist_ok=True)
     with open(f'res/time/{args.file_name}.txt', 'w') as f:
         f.write(f'\n\n{args.file_name}  time: {end_time - start_time}\n\n')
         f.write(f'all_policy_output_tokens: {all_policy_output_tokens}\n')
