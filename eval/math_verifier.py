@@ -98,7 +98,7 @@ for batch_start in range(0, len(all_prompts), batch_size):
             test_res.append(0)
 
 print("accuracy: ", sum(test_res) / len(test_res))
-os.mkdir('res/eval/', exist_ok=True)
+os.makedirs('res/eval/', exist_ok=True)
 with open('res/eval/' + args.save_name + '.txt', 'w') as f:
     f.write(f"\n\ntest_data_path: {test_path}\n")
     f.write(f"accuracy: {sum(test_res) / len(test_res)}\n")
