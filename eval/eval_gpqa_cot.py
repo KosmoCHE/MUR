@@ -1,4 +1,6 @@
 import json
+import os
+import argparse
 
 
 def getAnswer(response):
@@ -13,12 +15,20 @@ def getAnswer(response):
     return ""
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--test_file', type=str, required=True)
+parser.add_argument('--save_name', type=str, default=None)
+args = parser.parse_args()
+if args.save_name is None:
+    args.save_name = os.path.splitext(os.path.basename(args.test_file))[0]
+
 prediction = []
-with open(f"file_path") as file:
+with open(args.test_file) as file:
     prediction = json.load(file)
 print(len(prediction))
 correct_num = 0
 for i in range(len(prediction)):
+    is_correct = False
     if "final_answer" in prediction[i]:
         response = prediction[i]['final_answer']
         pred = getAnswer(response)
@@ -26,8 +36,9 @@ for i in range(len(prediction)):
         try:
             if gt == pred:
                 correct_num += 1
+                is_correct = True
         except:
-            continue
+            pass
     elif "all_answers" in prediction[i]:
         response = prediction[i]
         gt = prediction[i]['ground_truth']
@@ -35,6 +46,7 @@ for i in range(len(prediction)):
         pred = getAnswer(response['all_answers'][0])
         if pred == gt:
             correct_num += 1
+            is_correct = True
     else:
         response = prediction[i]
         gt = prediction[i]['ground_truth']
@@ -61,4 +73,16 @@ for i in range(len(prediction)):
             max_ans = max(all_ans)
             if all_ans.index(max_ans) == num_gt:
                 correct_num += 1
-print(correct_num/len(prediction))
+                is_correct = True
+    prediction[i]['correct'] = is_correct
+
+# Write correctness back into the original result file
+with open(args.test_file, 'w') as f:
+    json.dump(prediction, f, indent=4)
+
+accuracy = correct_num/len(prediction)
+print(accuracy)
+os.makedirs('res/eval/', exist_ok=True)
+with open('res/eval/' + args.save_name + '.txt', 'w') as f:
+    f.write(f"\n\ntest_data_path: {args.test_file}\n")
+    f.write(f"accuracy: {accuracy}\n")

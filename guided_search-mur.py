@@ -3,6 +3,7 @@ import json
 import numpy as np
 import argparse
 import time
+from datetime import datetime
 
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
@@ -227,8 +228,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpus', type=int, default=1)
     parser.add_argument('--momentum_rate', type=float, default=0.9)
     parser.add_argument('--max_steps', type=int, default=20)
-    parser.add_argument('--file_name', type=str,
-                        default='guided_search-mur.json')
+    parser.add_argument('--file_name', type=str, default=None)
     parser.add_argument('--candidate_num', type=int, default=4)
     parser.add_argument('--verify_num', type=int, default=1)
     parser.add_argument('--scaling_rate', type=float, default=0.8)
@@ -237,5 +237,10 @@ if __name__ == "__main__":
     # critic is the external model(in this file, it is used for selecting the best candidate)
     parser.add_argument('--critic', type=str, default='genprm1.5B')
     args = parser.parse_args()
+
+    if args.file_name is None:
+        dataset = os.path.basename(args.data_path).replace('.json', '').replace('_test', '')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.file_name = f'{dataset}-guided_search-mur-{timestamp}'
 
     main(args)

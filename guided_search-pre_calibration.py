@@ -3,6 +3,7 @@ import json
 import numpy as np
 import argparse
 import time
+from datetime import datetime
 
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
@@ -264,8 +265,7 @@ if __name__ == "__main__":
                         default='data/gpqa_diamond_test.json')
     parser.add_argument('--gpus', type=int, default=1)
     parser.add_argument('--max_steps', type=int, default=20)
-    parser.add_argument('--file_name', type=str,
-                        default='guided_search-pre_calibration.json')
+    parser.add_argument('--file_name', type=str, default=None)
     parser.add_argument('--candidate_num', type=int, default=4)
     parser.add_argument('--verify_num', type=int, default=1)
     parser.add_argument('--scaling_rate', type=float, default=0.8)
@@ -273,5 +273,10 @@ if __name__ == "__main__":
     parser.add_argument('--policy', type=str, default='Qwen3-1.7B')
     parser.add_argument('--critic', type=str, default='genprm1.5B')
     args = parser.parse_args()
+
+    if args.file_name is None:
+        dataset = os.path.basename(args.data_path).replace('.json', '').replace('_test', '')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.file_name = f'{dataset}-guided_search-pre_calibration-{timestamp}'
 
     main(args)

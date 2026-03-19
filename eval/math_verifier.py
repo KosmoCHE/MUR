@@ -7,10 +7,12 @@ import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--test_file', type=str, default='V2_test.json')
-parser.add_argument('--save_name', type=str, default='test')
+parser.add_argument('--save_name', type=str, default=None)
 parser.add_argument('--aim_gpu', type=int, default=0)
 parser.add_argument('--batch_size', type=int, default=32)
 args = parser.parse_args()
+if args.save_name is None:
+    args.save_name = os.path.splitext(os.path.basename(args.test_file))[0]
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.aim_gpu)
 
 # Replace with your model path
@@ -98,6 +100,13 @@ for batch_start in range(0, len(all_prompts), batch_size):
             test_res.append(0)
 
 print("accuracy: ", sum(test_res) / len(test_res))
+
+# Write correctness back into the original result file
+for i, res in enumerate(test_res):
+    test_data[i]['correct'] = bool(res)
+with open(test_path, 'w') as f:
+    json.dump(test_data, f, indent=4)
+
 os.makedirs('res/eval/', exist_ok=True)
 with open('res/eval/' + args.save_name + '.txt', 'w') as f:
     f.write(f"\n\ntest_data_path: {test_path}\n")

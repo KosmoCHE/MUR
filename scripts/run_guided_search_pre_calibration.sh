@@ -11,7 +11,6 @@ python guided_search-pre_calibration.py \
     --policy "$POLICY_PATH" \
     --critic "$CRITIC_PATH" \
     --data_path data/gpqa_diamond_test.json \
-    --file_name guided_search_pre_calibration \
     --max_steps 20 \
     --candidate_num 4 \
     --verify_num 1 \
