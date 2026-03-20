@@ -9,6 +9,7 @@
 #   bash scripts/run_eval.sh res/some_result.json    # evaluate a specific file
 #   bash scripts/run_eval.sh res/some_result.json 1  # specify GPU id (for math/aime)
 
+VERIFIER_PATH="/root/siton-data-7b4916f6b64e457fa4ce0508dc033853/yh/general_verifier"
 GPU_ID=${2:-0}
 
 if [ -n "$1" ]; then
@@ -19,6 +20,13 @@ fi
 
 for FILE in "${FILES[@]}"; do
     BASENAME=$(basename "$FILE")
+    EVAL_OUT="res/eval/${BASENAME%.json}.txt"
+
+    if [ -f "$EVAL_OUT" ]; then
+        echo "[SKIP] Already evaluated: $FILE → $EVAL_OUT"
+        continue
+    fi
+
     echo "=========================================="
     echo "Evaluating: $FILE"
 
@@ -29,7 +37,7 @@ for FILE in "${FILES[@]}"; do
     elif [[ "$BASENAME" == math* ]] || [[ "$BASENAME" == aime* ]]; then
         echo "Dataset: MATH/AIME → math_verifier.py"
         echo "=========================================="
-        python eval/math_verifier.py --test_file "$FILE" --aim_gpu "$GPU_ID"
+        python eval/math_verifier.py --test_file "$FILE" --verifier "$VERIFIER_PATH" --aim_gpu "$GPU_ID"
     else
         echo "Unknown dataset type, skipping: $BASENAME"
         echo "=========================================="

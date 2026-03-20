@@ -10,13 +10,13 @@ parser.add_argument('--test_file', type=str, default='V2_test.json')
 parser.add_argument('--save_name', type=str, default=None)
 parser.add_argument('--aim_gpu', type=int, default=0)
 parser.add_argument('--batch_size', type=int, default=32)
+parser.add_argument('--verifier', type=str, required=True, help='Path to the verifier model')
 args = parser.parse_args()
 if args.save_name is None:
     args.save_name = os.path.splitext(os.path.basename(args.test_file))[0]
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.aim_gpu)
 
-# Replace with your model path
-model_path = 'general_verifier'
+model_path = args.verifier
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(model_path)
