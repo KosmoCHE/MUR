@@ -67,6 +67,8 @@ def parse_args():
     # Concurrency
     parser.add_argument('--workers', type=int, default=1,
                         help='Number of concurrent workers for processing questions')
+    parser.add_argument('--num_rollouts', type=int, default=1,
+                        help='Number of independent rollouts per question (default: 1)')
 
     # Output
     parser.add_argument('--file_name', type=str, default=None,
@@ -81,8 +83,12 @@ def parse_args():
     # Auto-generate file name
     if args.file_name is None:
         dataset = os.path.basename(args.data_path).replace('.json', '').replace('_test', '')
+        policy_model = os.path.basename(args.policy_model_name.rstrip('/'))
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.file_name = f'{dataset}-{args.tts_method}-{args.trigger}-{timestamp}'
+        if args.num_rollouts > 1:
+            args.file_name = f'{dataset}-{policy_model}-{args.tts_method}-{args.trigger}-rollouts{args.num_rollouts}-{timestamp}'
+        else:
+            args.file_name = f'{dataset}-{policy_model}-{args.tts_method}-{args.trigger}-{timestamp}'
 
     return args
 
@@ -94,11 +100,11 @@ def load_tokenizer(model_name):
     return tokenizer, tokenizer.eos_token
 
 
-def process_question(idx, example, policy_client, critic_client,
+def process_question(idx, rollout_idx, example, policy_client, critic_client,
                      policy_tokenizer, critic_tokenizer,
                      policy_stop_token, critic_stop_token,
                      trigger, tts_method, args):
-    """Process a single question through the TTS pipeline."""
+    """Process a single question through the TTS pipeline (one rollout)."""
     question = example['input']
     current_traj = []
     candidate_traj = []
@@ -172,7 +178,7 @@ def process_question(idx, example, policy_client, critic_client,
                 break
 
         except Exception as e:
-            print(f"[Q{idx}] Step {step_idx} error: {e}")
+            print(f"[Q{idx}/R{rollout_idx}] Step {step_idx} error: {e}")
             continue
 
     # Final fallback if no answer found
@@ -185,16 +191,22 @@ def process_question(idx, example, policy_client, critic_client,
             current_traj.append(results[0].text.strip())
             all_policy_tokens += results[0].num_tokens
         except Exception as e:
-            print(f"[Q{idx}] Final fallback error: {e}")
+            print(f"[Q{idx}/R{rollout_idx}] Final fallback error: {e}")
 
+    policy_model = os.path.basename(args.policy_model_name.rstrip('/'))
     return {
+        'question_idx': idx,
+        'rollout_idx': rollout_idx,
+        'policy_model': policy_model,
         'question': question,
         'ground_truth': example['target'],
         'current_traj': '\n'.join(current_traj),
         'final_answer': current_traj[-1] if current_traj else 'No answer',
         'candidate_traj': candidate_traj,
         'step_uncertainties': step_uncertainties,
-    }, all_policy_tokens, all_critic_tokens
+        'policy_tokens': all_policy_tokens,
+        'critic_tokens': all_critic_tokens,
+    }
 
 
 def main():
@@ -233,59 +245,62 @@ def main():
     os.makedirs('res', exist_ok=True)
     os.makedirs('res/time', exist_ok=True)
 
-    all_res = [None] * len(test_data)
+    total_tasks = len(test_data) * args.num_rollouts
     total_policy_tokens = 0
     total_critic_tokens = 0
     completed_count = 0
     write_lock = Lock()
+    output_path = f'res/{args.file_name}.jsonl'
     start_time = time.time()
 
-    def save_results():
-        """Save current results to disk (thread-safe)."""
+    # Clear output file (fresh start)
+    with open(output_path, 'w') as f:
+        pass
+
+    def append_result(result):
+        """Append one result line to JSONL (thread-safe)."""
+        nonlocal total_policy_tokens, total_critic_tokens, completed_count
         with write_lock:
-            # Collect non-None results in order
-            results_to_save = [r for r in all_res if r is not None]
-            with open(f'res/{args.file_name}.json', 'w') as f:
-                json.dump(results_to_save, f, indent=4)
+            total_policy_tokens += result['policy_tokens']
+            total_critic_tokens += result['critic_tokens']
+            completed_count += 1
+            with open(output_path, 'a') as f:
+                f.write(json.dumps(result, ensure_ascii=False) + '\n')
+            print(f"Completed {completed_count} / {total_tasks} "
+                  f"(Q{result['question_idx']}/R{result['rollout_idx']})")
 
     if args.workers <= 1:
         # Sequential processing
         for idx, example in enumerate(test_data):
-            print(f"Processing {idx} / {len(test_data)}")
-            result, p_tokens, c_tokens = process_question(
-                idx, example, policy_client, critic_client,
-                policy_tokenizer, critic_tokenizer,
-                policy_stop_token, critic_stop_token,
-                trigger, tts_method, args)
-            all_res[idx] = result
-            total_policy_tokens += p_tokens
-            total_critic_tokens += c_tokens
-            save_results()
+            for r_idx in range(args.num_rollouts):
+                print(f"Processing Q{idx}/R{r_idx} ({completed_count}/{total_tasks})")
+                result = process_question(
+                    idx, r_idx, example, policy_client, critic_client,
+                    policy_tokenizer, critic_tokenizer,
+                    policy_stop_token, critic_stop_token,
+                    trigger, tts_method, args)
+                append_result(result)
     else:
         # Concurrent processing with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {}
             for idx, example in enumerate(test_data):
-                future = executor.submit(
-                    process_question,
-                    idx, example, policy_client, critic_client,
-                    policy_tokenizer, critic_tokenizer,
-                    policy_stop_token, critic_stop_token,
-                    trigger, tts_method, args)
-                futures[future] = idx
+                for r_idx in range(args.num_rollouts):
+                    future = executor.submit(
+                        process_question,
+                        idx, r_idx, example, policy_client, critic_client,
+                        policy_tokenizer, critic_tokenizer,
+                        policy_stop_token, critic_stop_token,
+                        trigger, tts_method, args)
+                    futures[future] = (idx, r_idx)
 
             for future in as_completed(futures):
-                idx = futures[future]
+                idx, r_idx = futures[future]
                 try:
-                    result, p_tokens, c_tokens = future.result()
-                    all_res[idx] = result
-                    total_policy_tokens += p_tokens
-                    total_critic_tokens += c_tokens
-                    completed_count += 1
-                    print(f"Completed {completed_count} / {len(test_data)} (Q{idx})")
-                    save_results()
+                    result = future.result()
+                    append_result(result)
                 except Exception as e:
-                    print(f"[Q{idx}] Failed: {e}")
+                    print(f"[Q{idx}/R{r_idx}] Failed: {e}")
 
     end_time = time.time()
     elapsed = end_time - start_time
@@ -298,6 +313,7 @@ def main():
         f.write(f'all_critic_output_tokens: {total_critic_tokens}\n')
         f.write(f'tts_method: {args.tts_method}\n')
         f.write(f'trigger: {args.trigger}\n')
+        f.write(f'num_rollouts: {args.num_rollouts}\n')
         f.write(f'workers: {args.workers}\n')
 
 

@@ -17,6 +17,7 @@ POLICY_URL="http://localhost:8000/v1"
 CRITIC_URL="http://localhost:8001/v1"
 
 WORKERS=1
+NUM_ROLLOUTS=1
 MAX_STEPS=20
 CANDIDATE_NUM=4
 VERIFY_NUM=1
@@ -38,7 +39,8 @@ CMD="python tts_experiment.py \
     --momentum_rate $MOMENTUM_RATE \
     --scaling_rate $SCALING_RATE \
     --cluster_num $CLUSTER_NUM \
-    --workers $WORKERS"
+    --workers $WORKERS \
+    --num_rollouts $NUM_ROLLOUTS"
 
 # Add critic model if not phi_decoding
 if [ "$TTS_METHOD" != "phi_decoding" ]; then

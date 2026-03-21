@@ -1,6 +1,7 @@
 import json
 import os
 import argparse
+from collections import Counter, defaultdict
 
 
 def getAnswer(response):
@@ -15,6 +16,32 @@ def getAnswer(response):
     return ""
 
 
+def load_data(test_file):
+    """Load data from JSONL or JSON format."""
+    if test_file.endswith('.jsonl'):
+        data = []
+        with open(test_file) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    data.append(json.loads(line))
+        return data
+    else:
+        with open(test_file) as f:
+            return json.load(f)
+
+
+def save_data(test_file, data):
+    """Save data back in the same format (JSONL or JSON)."""
+    if test_file.endswith('.jsonl'):
+        with open(test_file, 'w') as f:
+            for item in data:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+    else:
+        with open(test_file, 'w') as f:
+            json.dump(data, f, indent=4)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--test_file', type=str, required=True)
 parser.add_argument('--save_name', type=str, default=None)
@@ -22,67 +49,61 @@ args = parser.parse_args()
 if args.save_name is None:
     args.save_name = os.path.splitext(os.path.basename(args.test_file))[0]
 
-prediction = []
-with open(args.test_file) as file:
-    prediction = json.load(file)
+prediction = load_data(args.test_file)
 print(len(prediction))
+
+# Group by question_idx for multi-rollout support
+groups = defaultdict(list)
+for i, item in enumerate(prediction):
+    key = item.get('question_idx', i)
+    groups[key].append(i)
+
+num_questions = len(groups)
 correct_num = 0
-for i in range(len(prediction)):
-    is_correct = False
-    if "final_answer" in prediction[i]:
-        response = prediction[i]['final_answer']
-        pred = getAnswer(response)
-        gt = prediction[i]['ground_truth']
-        try:
+
+for q_idx, indices in groups.items():
+    rollouts = [prediction[i] for i in indices]
+    gt = rollouts[0]['ground_truth']
+
+    if len(rollouts) == 1:
+        # Single rollout: direct evaluation
+        item = rollouts[0]
+        is_correct = False
+        if "final_answer" in item:
+            pred = getAnswer(item['final_answer'])
             if gt == pred:
                 correct_num += 1
                 is_correct = True
-        except:
-            pass
-    elif "all_answers" in prediction[i]:
-        response = prediction[i]
-        gt = prediction[i]['ground_truth']
-
-        pred = getAnswer(response['all_answers'][0])
-        if pred == gt:
-            correct_num += 1
-            is_correct = True
-    else:
-        response = prediction[i]
-        gt = prediction[i]['ground_truth']
-        if "all_answers" in response:
-            all_ans = [0, 0, 0, 0]
-            for each in response["all_answers"]:
-                char = getAnswer(each)
-                if char == "A":
-                    all_ans[0] += 1
-                elif char == "B":
-                    all_ans[1] += 1
-                elif char == "C":
-                    all_ans[2] += 1
-                elif char == "D":
-                    all_ans[3] += 1
-                if gt == "A":
-                    num_gt = 0
-                elif gt == "B":
-                    num_gt = 1
-                elif gt == "C":
-                    num_gt = 2
-                elif gt == "D":
-                    num_gt = 3
-            max_ans = max(all_ans)
-            if all_ans.index(max_ans) == num_gt:
+        elif "all_answers" in item:
+            pred = getAnswer(item['all_answers'][0])
+            if pred == gt:
                 correct_num += 1
                 is_correct = True
-    prediction[i]['correct'] = is_correct
+        for i in indices:
+            prediction[i]['correct'] = is_correct
+    else:
+        # Multi-rollout: majority voting
+        answers = [getAnswer(r['final_answer']) for r in rollouts]
+        answers_valid = [a for a in answers if a]
+        is_correct = False
+        if answers_valid:
+            most_common = Counter(answers_valid).most_common(1)[0][0]
+            if most_common == gt:
+                correct_num += 1
+                is_correct = True
+        # Mark each rollout with per-rollout and majority-vote correctness
+        for i, ans in zip(indices, answers):
+            prediction[i]['correct'] = (ans == gt)
+            prediction[i]['majority_vote_correct'] = is_correct
 
 # Write correctness back into the original result file
-with open(args.test_file, 'w') as f:
-    json.dump(prediction, f, indent=4)
+save_data(args.test_file, prediction)
 
-accuracy = correct_num/len(prediction)
-print(accuracy)
+accuracy = correct_num / num_questions
+print(f"accuracy: {accuracy} ({correct_num}/{num_questions})")
 os.makedirs('res/eval/', exist_ok=True)
 with open('res/eval/' + args.save_name + '.txt', 'w') as f:
     f.write(f"\n\ntest_data_path: {args.test_file}\n")
     f.write(f"accuracy: {accuracy}\n")
+    f.write(f"num_questions: {num_questions}\n")
+    f.write(f"num_rollouts_per_question: {len(prediction) // num_questions}\n")

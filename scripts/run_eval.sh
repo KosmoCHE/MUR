@@ -5,9 +5,9 @@
 # - math_500 / aime2024 / aime2025 → math_verifier.py (general verifier model)
 #
 # Usage:
-#   bash scripts/run_eval.sh                        # evaluate all JSON files in res/
-#   bash scripts/run_eval.sh res/some_result.json    # evaluate a specific file
-#   bash scripts/run_eval.sh res/some_result.json 1  # specify GPU id (for math/aime)
+#   bash scripts/run_eval.sh                        # evaluate all JSON/JSONL files in res/
+#   bash scripts/run_eval.sh res/some_result.jsonl   # evaluate a specific file
+#   bash scripts/run_eval.sh res/some_result.jsonl 1 # specify GPU id (for math/aime)
 
 VERIFIER_PATH="/root/siton-data-7b4916f6b64e457fa4ce0508dc033853/yh/general_verifier"
 GPU_ID=${2:-0}
@@ -15,12 +15,18 @@ GPU_ID=${2:-0}
 if [ -n "$1" ]; then
     FILES=("$1")
 else
-    FILES=(res/*.json)
+    FILES=(res/*.json res/*.jsonl)
 fi
 
 for FILE in "${FILES[@]}"; do
+    # Skip glob patterns that didn't match any files
+    [ -f "$FILE" ] || continue
+
     BASENAME=$(basename "$FILE")
-    EVAL_OUT="res/eval/${BASENAME%.json}.txt"
+    # Strip both .json and .jsonl extensions
+    EVAL_NAME="${BASENAME%.jsonl}"
+    EVAL_NAME="${EVAL_NAME%.json}"
+    EVAL_OUT="res/eval/${EVAL_NAME}.txt"
 
     if [ -f "$EVAL_OUT" ]; then
         echo "[SKIP] Already evaluated: $FILE → $EVAL_OUT"

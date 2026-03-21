@@ -4,6 +4,7 @@ from vllm import LLM, SamplingParams
 import argparse
 from modelscope import AutoTokenizer
 import os
+from collections import defaultdict
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--test_file', type=str, default='V2_test.json')
@@ -22,12 +23,37 @@ model_path = args.verifier
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 model = LLM(model=model_path, tensor_parallel_size=1,trust_remote_code=True, gpu_memory_utilization=0.9)
 
-test_path = args.test_file
-test_data = []
-with open(test_path, 'r') as f:
-    test_data = json.load(f)
 
-# Prepare all prompts
+def load_data(test_file):
+    """Load data from JSONL or JSON format."""
+    if test_file.endswith('.jsonl'):
+        data = []
+        with open(test_file) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    data.append(json.loads(line))
+        return data
+    else:
+        with open(test_file, 'r') as f:
+            return json.load(f)
+
+
+def save_data(test_file, data):
+    """Save data back in the same format (JSONL or JSON)."""
+    if test_file.endswith('.jsonl'):
+        with open(test_file, 'w') as f:
+            for item in data:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+    else:
+        with open(test_file, 'w') as f:
+            json.dump(data, f, indent=4)
+
+
+test_path = args.test_file
+test_data = load_data(test_path)
+
+# Prepare all prompts (one per rollout line)
 all_prompts = []
 for data_idx, data in enumerate(test_data):
     question = data['question']
@@ -99,16 +125,41 @@ for batch_start in range(0, len(all_prompts), batch_size):
         for _ in range(len(batch_prompts)):
             test_res.append(0)
 
-print("accuracy: ", sum(test_res) / len(test_res))
+# Group by question_idx for multi-rollout majority voting
+groups = defaultdict(list)
+for i, item in enumerate(test_data):
+    key = item.get('question_idx', i)
+    groups[key].append(i)
+
+num_questions = len(groups)
+correct_num = 0
+
+for q_idx, indices in groups.items():
+    if len(indices) == 1:
+        # Single rollout
+        i = indices[0]
+        test_data[i]['correct'] = bool(test_res[i])
+        correct_num += test_res[i]
+    else:
+        # Multi-rollout: majority voting on verification results
+        votes = [test_res[i] for i in indices]
+        majority_correct = sum(votes) > len(votes) / 2
+        if majority_correct:
+            correct_num += 1
+        for i in indices:
+            test_data[i]['correct'] = bool(test_res[i])
+            test_data[i]['majority_vote_correct'] = majority_correct
+
+accuracy = correct_num / num_questions
+print(f"accuracy: {accuracy} ({correct_num}/{num_questions})")
 
 # Write correctness back into the original result file
-for i, res in enumerate(test_res):
-    test_data[i]['correct'] = bool(res)
-with open(test_path, 'w') as f:
-    json.dump(test_data, f, indent=4)
+save_data(test_path, test_data)
 
 os.makedirs('res/eval/', exist_ok=True)
 with open('res/eval/' + args.save_name + '.txt', 'w') as f:
     f.write(f"\n\ntest_data_path: {test_path}\n")
-    f.write(f"accuracy: {sum(test_res) / len(test_res)}\n")
+    f.write(f"accuracy: {accuracy}\n")
+    f.write(f"num_questions: {num_questions}\n")
+    f.write(f"num_rollouts_per_question: {len(test_data) // num_questions}\n")
     f.write(f"test_res: {test_res}\n")
