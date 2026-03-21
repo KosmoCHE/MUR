@@ -1,4 +1,0 @@
-
-
-test_data_path: res/gpqa_diamond_test_guided_search_mur.json
-accuracy: 0.4393939393939394
