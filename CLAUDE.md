@@ -8,51 +8,98 @@ MUR (Momentum Uncertainty Guided Reasoning) is a research implementation for opt
 
 ## Running Experiments
 
-```bash
-# Using shell scripts (recommended, paths pre-configured)
-bash scripts/run_guided_search_mur.sh
-bash scripts/run_guided_search_pre_calibration.sh
+Experiments use a vLLM server backend (OpenAI-compatible API) for high-throughput inference.
 
-# Direct invocation
-python guided_search-mur.py --policy <model_path> --critic <critic_path> --data_path data/gpqa_diamond_test.json
-python guided_search-pre_calibration.py --policy <model_path> --critic <critic_path> --data_path data/gpqa_diamond_test.json
-python guided_search-per_step_scale.py --policy <model_path> --critic <critic_path> --data_path data/gpqa_diamond_test.json
+### 1. Start vLLM servers
+
+```bash
+# Start policy + critic servers (customize model paths, GPU, ports)
+bash scripts/start_servers.sh /path/to/Qwen3-8B /path/to/genprm1.5B
+
+# For phi_decoding (no critic needed), omit critic path
+bash scripts/start_servers.sh /path/to/Qwen3-8B
+
+# Environment variables: POLICY_PORT, CRITIC_PORT, POLICY_GPU, CRITIC_GPU, POLICY_MEM, CRITIC_MEM
 ```
 
-Key arguments: `--scaling_rate` (default 0.8-0.9, controls trigger sensitivity), `--momentum_rate` (0.9, MUR only), `--max_steps` (20), `--candidate_num` (4), `--verify_num` (1, number of critic evaluations per candidate), `--aim_gpu` (GPU device ID).
+### 2. Run experiment
+
+```bash
+# Using shell script (edit scripts/run_experiment.sh to configure)
+bash scripts/run_experiment.sh
+
+# Direct invocation
+python tts_experiment.py \
+    --tts_method guided_search \
+    --trigger mur \
+    --policy_url http://localhost:8000/v1 \
+    --critic_url http://localhost:8001/v1 \
+    --policy_model_name /path/to/Qwen3-8B \
+    --critic_model_name /path/to/genprm1.5B \
+    --data_path data/gpqa_diamond_test.json \
+    --workers 4
+```
+
+### Key arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--tts_method` | (required) | `guided_search`, `phi_decoding`, or `llm_as_a_critic` |
+| `--trigger` | `mur` | `mur` (momentum-based) or `per_step` (always trigger) |
+| `--scaling_rate` | 0.9 | Trigger sensitivity |
+| `--momentum_rate` | 0.9 | EMA rate for momentum uncertainty |
+| `--max_steps` | 20 | Maximum reasoning steps |
+| `--candidate_num` | 4 | Candidates per trigger (guided_search, phi_decoding) |
+| `--verify_num` | 1 | Critic evaluations per candidate (guided_search) |
+| `--cluster_num` | 2 | KMeans clusters (phi_decoding only) |
+| `--workers` | 1 | Concurrent question processing threads |
 
 ## Evaluation
 
 ```bash
 python eval/math_verifier.py --test_data_path <results_json> --verifier <verifier_model_path>
 python eval/eval_gpqa_cot.py  # pattern-based answer extraction
+bash scripts/run_eval.sh <results_json>  # auto-detects dataset type
 ```
 
 Results are saved to `res/`, timing/token stats to `res/time/`.
 
 ## Architecture
 
-**Three guided search variants**, all using an external critic model to score candidates:
+### TTS Methods (`tts/methods/`)
 
-| File | Trigger Condition | Description |
-|---|---|---|
-| `guided_search-mur.py` | `exp(cur_signal) < exp(momentum_uncertainty) * scaling_rate` | Momentum-based: triggers when step confidence drops below EMA baseline |
-| `guided_search-pre_calibration.py` | `cur_signal < calibration_mean_logp * scaling_rate` | Pre-calibration: generates a full trajectory first without TTS to compute mean uncertainty, then uses that as threshold |
-| `guided_search-per_step_scale.py` | `if True:` (always) | Baseline: triggers candidate sampling at every step |
+| Method | File | Description | Needs Critic |
+|---|---|---|---|
+| Guided Search | `tts/methods/guided_search.py` | Generate N candidates, critic scores each via analyze→judge, select by "Yes" logprob | Yes |
+| Phi Decoding | `tts/methods/phi_decoding.py` | Generate N candidates, foresight reranking with TF-IDF + KMeans clustering | No |
+| LLM-as-a-Critic | `tts/methods/llm_as_a_critic.py` | Critic evaluates current step, policy revises if judged incorrect | Yes |
 
-**Common pipeline** (when triggered):
-1. Generate `candidate_num` alternative steps
-2. Critic model evaluates each candidate via analyze → judge flow
-3. Select candidate with highest "Yes" token logprob
-4. Replace current step with best candidate
+### Trigger Strategies (`tts/triggers.py`)
 
-**Output data**: All scripts save `step_uncertainties` per question (step-level `avg_logp`, threshold info, whether triggered). Pre-calibration additionally saves `calibration_mean_logp` and `calibration_step_logps`.
+| Trigger | Condition |
+|---|---|
+| MUR | `exp(cur_signal) < exp(momentum_uncertainty) * scaling_rate`, step > 0 |
+| Per-Step | Always trigger (baseline) |
+
+### Package Structure
+
+```
+tts/
+  client.py        # vLLM server client wrapper (OpenAI-compatible API)
+  prompts.py       # Prompt construction utilities
+  triggers.py      # Trigger strategies (MUR, per_step)
+  methods/
+    guided_search.py
+    phi_decoding.py
+    llm_as_a_critic.py
+tts_experiment.py  # Unified entry script
+```
 
 **Shared utilities**: `utils/generate_prompts.py` provides critic prompt templates (`ciritique_last_generation_math` for MATH/AIME, `ciritique_last_generation` for GPQA).
 
 ## Dependencies
 
-Requires vLLM for inference. Install with: `pip install -r requirements.txt`
+Requires vLLM (server mode), openai, scikit-learn. Install with: `pip install -r requirements.txt`
 
 ## Datasets
 
